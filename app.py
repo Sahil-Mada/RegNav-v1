@@ -17,6 +17,7 @@ from utils.summarizer import DocumentSummarizer
 from utils.ingest import process_document
 from utils.vectorstore import HierarchicalVectorStore
 from utils.rag import HierarchicalRAG
+from utils.api_validator import APIValidator
 
 
 # Page configuration
@@ -110,6 +111,20 @@ with st.sidebar:
                 help="Enter your OpenAI API key"
             )
             st.session_state.openai_api_key = openai_key
+            
+            # API validation button
+            if st.button("🔍 Validate API Key", help="Test if your API key is valid and has quota"):
+                if openai_key:
+                    with st.spinner("Validating API key..."):
+                        is_valid, error_msg = APIValidator.validate_openai_key(openai_key)
+                        if is_valid:
+                            st.success("✅ API key is valid and working!")
+                        else:
+                            st.error(f"❌ {error_msg}")
+                            if "quota" in error_msg.lower():
+                                st.warning("💡 Tip: Switch to local embeddings (sentence-transformers) to avoid quota issues.")
+                else:
+                    st.warning("Please enter an API key first.")
         else:
             local_model = st.text_input(
                 "Local Model Name",
@@ -125,6 +140,30 @@ with st.sidebar:
             help="Choose between OpenAI GPT or local Ollama"
         )
         st.session_state.llm_type = llm_type
+        
+        if llm_type == "openai":
+            llm_openai_key = st.text_input(
+                "OpenAI API Key (for LLM)",
+                type="password",
+                value=st.session_state.get('openai_api_key', ''),
+                help="Enter your OpenAI API key for LLM (can be same as embedding key)"
+            )
+            if llm_openai_key:
+                st.session_state.openai_api_key = llm_openai_key
+            
+            # API validation button for LLM
+            if st.button("🔍 Validate LLM API Key", help="Test if your LLM API key is valid and has quota"):
+                if llm_openai_key:
+                    with st.spinner("Validating API key..."):
+                        is_valid, error_msg = APIValidator.validate_openai_key(llm_openai_key)
+                        if is_valid:
+                            st.success("✅ LLM API key is valid and working!")
+                        else:
+                            st.error(f"❌ {error_msg}")
+                            if "quota" in error_msg.lower():
+                                st.warning("💡 Tip: Switch to Ollama (local LLM) to avoid quota issues.")
+                else:
+                    st.warning("Please enter an API key first.")
         
         if llm_type == "ollama":
             ollama_model = st.text_input(
@@ -257,8 +296,14 @@ with st.sidebar:
                                 hierarchy_level = file_data["hierarchy_level"]
                                 tmp_path = file_data["tmp_path"]
                                 
-                                # Generate summary
-                                summary = st.session_state.summarizer.summarize(extracted_text, max_length=200)
+                                # Generate summary (with error handling)
+                                try:
+                                    summary = st.session_state.summarizer.summarize(extracted_text, max_length=200)
+                                except Exception as e:
+                                    error_msg = APIValidator.handle_openai_error(e, "Summarization")
+                                    st.warning(f"⚠️ {error_msg}")
+                                    # Use extractive summary as fallback
+                                    summary = st.session_state.summarizer.extractive_summary(extracted_text, 10)
                                 
                                 # Process document with hierarchy level
                                 file_id = str(uuid.uuid4())
@@ -280,12 +325,19 @@ with st.sidebar:
                                 metadatas = [chunk["metadata"] for chunk in processed_chunks]
                                 ids = [chunk["id"] for chunk in processed_chunks]
                                 
-                                # Add to vector store
-                                st.session_state.vector_store.add_documents(
-                                    texts=texts,
-                                    metadatas=metadatas,
-                                    ids=ids
-                                )
+                                # Add to vector store (with error handling)
+                                try:
+                                    st.session_state.vector_store.add_documents(
+                                        texts=texts,
+                                        metadatas=metadatas,
+                                        ids=ids
+                                    )
+                                except Exception as e:
+                                    error_msg = APIValidator.handle_openai_error(e, "Embedding generation")
+                                    st.error(f"❌ Failed to add documents to vector store: {error_msg}")
+                                    if APIValidator.is_quota_error(e):
+                                        st.warning("💡 Tip: Switch to local embeddings in the configuration to avoid quota issues.")
+                                    raise  # Re-raise to stop processing
                                 
                                 # Store summary
                                 st.session_state.document_summaries[file_id] = {
@@ -486,7 +538,17 @@ else:
                     st.info("No relevant context was retrieved from the knowledge base.")
             
             except Exception as e:
-                st.error(f"Error processing query: {str(e)}")
+                error_str = str(e)
+                # Check if it's an API error
+                if "quota" in error_str.lower() or "insufficient_quota" in error_str.lower():
+                    error_msg = APIValidator.handle_openai_error(e, "Query processing")
+                    st.error(error_msg)
+                    st.warning("💡 **Solution:** Switch to local models (Ollama) or local embeddings in the configuration sidebar.")
+                elif "API" in error_str or "api" in error_str:
+                    error_msg = APIValidator.handle_openai_error(e, "Query processing")
+                    st.error(error_msg)
+                else:
+                    st.error(f"Error processing query: {error_str}")
     
     elif submit_button:
         st.warning("Please enter a question first.")

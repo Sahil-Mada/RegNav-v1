@@ -8,12 +8,20 @@ import chromadb
 from chromadb.config import Settings
 from typing import List, Optional, Dict
 from sentence_transformers import SentenceTransformer
+from utils.api_validator import APIValidator
 
 try:
-    from openai import OpenAI
+    from openai import OpenAI, APIError, RateLimitError
 except ImportError:
-    import openai
-    OpenAI = None
+    try:
+        import openai
+        OpenAI = None
+        APIError = Exception
+        RateLimitError = Exception
+    except ImportError:
+        OpenAI = None
+        APIError = Exception
+        RateLimitError = Exception
 
 
 class HierarchicalVectorStore:
@@ -78,22 +86,29 @@ class HierarchicalVectorStore:
             
         Returns:
             Embedding vector as a list of floats
+            
+        Raises:
+            Exception: If API call fails and no fallback available
         """
         if self.embedding_type == "openai":
-            if self.openai_client:
-                response = self.openai_client.embeddings.create(
-                    model="text-embedding-ada-002",
-                    input=text
-                )
-                return response.data[0].embedding
-            else:
-                # Fallback to old API
-                import openai
-                response = openai.Embedding.create(
-                    model="text-embedding-ada-002",
-                    input=text
-                )
-                return response['data'][0]['embedding']
+            try:
+                if self.openai_client:
+                    response = self.openai_client.embeddings.create(
+                        model="text-embedding-ada-002",
+                        input=text
+                    )
+                    return response.data[0].embedding
+                else:
+                    # Fallback to old API
+                    import openai
+                    response = openai.Embedding.create(
+                        model="text-embedding-ada-002",
+                        input=text
+                    )
+                    return response['data'][0]['embedding']
+            except (APIError, RateLimitError, Exception) as e:
+                error_msg = APIValidator.handle_openai_error(e, "Embedding generation")
+                raise Exception(error_msg)
         else:
             return self.embedding_model.encode(text).tolist()
     
@@ -106,22 +121,29 @@ class HierarchicalVectorStore:
             
         Returns:
             List of embedding vectors
+            
+        Raises:
+            Exception: If API call fails and no fallback available
         """
         if self.embedding_type == "openai":
-            if self.openai_client:
-                response = self.openai_client.embeddings.create(
-                    model="text-embedding-ada-002",
-                    input=texts
-                )
-                return [item.embedding for item in response.data]
-            else:
-                # Fallback to old API
-                import openai
-                response = openai.Embedding.create(
-                    model="text-embedding-ada-002",
-                    input=texts
-                )
-                return [item['embedding'] for item in response['data']]
+            try:
+                if self.openai_client:
+                    response = self.openai_client.embeddings.create(
+                        model="text-embedding-ada-002",
+                        input=texts
+                    )
+                    return [item.embedding for item in response.data]
+                else:
+                    # Fallback to old API
+                    import openai
+                    response = openai.Embedding.create(
+                        model="text-embedding-ada-002",
+                        input=texts
+                    )
+                    return [item['embedding'] for item in response['data']]
+            except (APIError, RateLimitError, Exception) as e:
+                error_msg = APIValidator.handle_openai_error(e, "Embedding generation")
+                raise Exception(error_msg)
         else:
             return self.embedding_model.encode(texts).tolist()
     

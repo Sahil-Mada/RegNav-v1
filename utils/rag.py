@@ -7,12 +7,20 @@ import os
 from typing import List, Optional, Dict
 from utils.vectorstore import HierarchicalVectorStore
 from utils.router import DomainRouter
+from utils.api_validator import APIValidator
 
 try:
-    from openai import OpenAI
+    from openai import OpenAI, APIError, RateLimitError
 except ImportError:
-    import openai
-    OpenAI = None
+    try:
+        import openai
+        OpenAI = None
+        APIError = Exception
+        RateLimitError = Exception
+    except ImportError:
+        OpenAI = None
+        APIError = Exception
+        RateLimitError = Exception
 
 
 class HierarchicalRAG:
@@ -132,30 +140,35 @@ Question: {query}
 Answer:"""
         
         if self.llm_type == "openai":
-            if self.openai_client:
-                response = self.openai_client.chat.completions.create(
-                    model="gpt-3.5-turbo",
-                    messages=[
-                        {"role": "system", "content": "You are an FDA regulatory assistant that answers questions based on provided context."},
-                        {"role": "user", "content": prompt}
-                    ],
-                    temperature=0.7,
-                    max_tokens=500
-                )
-                return response.choices[0].message.content.strip()
-            else:
-                # Fallback to old API
-                import openai
-                response = openai.ChatCompletion.create(
-                    model="gpt-3.5-turbo",
-                    messages=[
-                        {"role": "system", "content": "You are an FDA regulatory assistant that answers questions based on provided context."},
-                        {"role": "user", "content": prompt}
-                    ],
-                    temperature=0.7,
-                    max_tokens=500
-                )
-                return response.choices[0].message.content.strip()
+            try:
+                if self.openai_client:
+                    response = self.openai_client.chat.completions.create(
+                        model="gpt-3.5-turbo",
+                        messages=[
+                            {"role": "system", "content": "You are an FDA regulatory assistant that answers questions based on provided context."},
+                            {"role": "user", "content": prompt}
+                        ],
+                        temperature=0.7,
+                        max_tokens=500
+                    )
+                    return response.choices[0].message.content.strip()
+                else:
+                    # Fallback to old API
+                    import openai
+                    response = openai.ChatCompletion.create(
+                        model="gpt-3.5-turbo",
+                        messages=[
+                            {"role": "system", "content": "You are an FDA regulatory assistant that answers questions based on provided context."},
+                            {"role": "user", "content": prompt}
+                        ],
+                        temperature=0.7,
+                        max_tokens=500
+                    )
+                    return response.choices[0].message.content.strip()
+            except (APIError, RateLimitError, Exception) as e:
+                error_msg = APIValidator.handle_openai_error(e, "Answer generation")
+                # Return a helpful message instead of crashing
+                return f"{error_msg}\n\nPlease check your API key and billing status, or switch to local models (Ollama) in the configuration."
         
         elif self.llm_type == "ollama":
             try:

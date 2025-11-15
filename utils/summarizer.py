@@ -5,12 +5,20 @@ Generates summaries for documents using LLM or extractive methods.
 
 from typing import Optional, Dict
 import re
+from utils.api_validator import APIValidator
 
 try:
-    from openai import OpenAI
+    from openai import OpenAI, APIError, RateLimitError
 except ImportError:
-    import openai
-    OpenAI = None
+    try:
+        import openai
+        OpenAI = None
+        APIError = Exception
+        RateLimitError = Exception
+    except ImportError:
+        OpenAI = None
+        APIError = Exception
+        RateLimitError = Exception
 
 
 class DocumentSummarizer:
@@ -71,29 +79,36 @@ Document:
 Summary:"""
         
         if self.llm_type == "openai":
-            if self.openai_client:
-                response = self.openai_client.chat.completions.create(
-                    model="gpt-3.5-turbo",
-                    messages=[
-                        {"role": "system", "content": "You are a regulatory document summarization assistant."},
-                        {"role": "user", "content": prompt}
-                    ],
-                    temperature=0.3,
-                    max_tokens=300
-                )
-                return response.choices[0].message.content.strip()
-            else:
-                import openai
-                response = openai.ChatCompletion.create(
-                    model="gpt-3.5-turbo",
-                    messages=[
-                        {"role": "system", "content": "You are a regulatory document summarization assistant."},
-                        {"role": "user", "content": prompt}
-                    ],
-                    temperature=0.3,
-                    max_tokens=300
-                )
-                return response.choices[0].message.content.strip()
+            try:
+                if self.openai_client:
+                    response = self.openai_client.chat.completions.create(
+                        model="gpt-3.5-turbo",
+                        messages=[
+                            {"role": "system", "content": "You are a regulatory document summarization assistant."},
+                            {"role": "user", "content": prompt}
+                        ],
+                        temperature=0.3,
+                        max_tokens=300
+                    )
+                    return response.choices[0].message.content.strip()
+                else:
+                    import openai
+                    response = openai.ChatCompletion.create(
+                        model="gpt-3.5-turbo",
+                        messages=[
+                            {"role": "system", "content": "You are a regulatory document summarization assistant."},
+                            {"role": "user", "content": prompt}
+                        ],
+                        temperature=0.3,
+                        max_tokens=300
+                    )
+                    return response.choices[0].message.content.strip()
+            except (APIError, RateLimitError, Exception) as e:
+                # Fallback to extractive summary on API error
+                error_msg = APIValidator.handle_openai_error(e, "Summarization")
+                # Return extractive summary with error note
+                extractive = self.extractive_summary(text, max_length // 20)
+                return f"[Note: LLM summarization failed - {error_msg}]\n\n{extractive}"
         
         elif self.llm_type == "ollama":
             try:
@@ -141,6 +156,7 @@ Summary:"""
     def summarize(self, text: str, max_length: int = 200) -> str:
         """
         Generate summary (uses LLM if available, otherwise extractive).
+        Automatically falls back to extractive if LLM fails.
         
         Args:
             text: Document text
@@ -150,7 +166,11 @@ Summary:"""
             Summary text
         """
         if self.llm_type in ["openai", "ollama"]:
-            return self.summarize_with_llm(text, max_length)
+            try:
+                return self.summarize_with_llm(text, max_length)
+            except Exception as e:
+                # Fallback to extractive on any error
+                return self.extractive_summary(text, max_length // 20)
         else:
             return self.extractive_summary(text, max_length // 20)  # Approximate sentences
 
